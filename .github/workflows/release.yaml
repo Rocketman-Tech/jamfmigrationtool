@@ -1,0 +1,110 @@
+name: Build and Release JamfMigrationTool
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: Build JamfMigrationTool
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Import developer id installer certificate
+        uses: apple-actions/import-codesign-certs@v1
+        with:
+          p12-file-base64: ${{ secrets.INSTALLER_CERTIFICATE_P12 }}
+          p12-password: ${{ secrets.CERTIFICATE_PASSWORD }}
+          keychain: build
+          keychain-password: "temp-password"
+
+      - name: Import developer id application certificate
+        uses: apple-actions/import-codesign-certs@v1
+        with:
+          p12-file-base64: ${{ secrets.CERTIFICATE_P12 }}
+          p12-password: ${{ secrets.CERTIFICATE_PASSWORD }}
+          create-keychain: false
+          keychain: build
+          keychain-password: "temp-password"
+
+      - name: Build the project
+        run: |
+          xcodebuild -scheme JamfMigrationTool -configuration Release clean build CODE_SIGN_IDENTITY='Developer ID Application' CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO OTHER_CODE_SIGN_FLAGS='--timestamp' -derivedDataPath build
+
+      - name: Create .pkg installer
+        run: |
+          rm -rf package-root
+          mkdir -p package-root/usr/local/bin
+          cp build/Build/Products/Release/JamfMigrationTool package-root/usr/local/bin/
+          pkgbuild \
+            --root "package-root" \
+            --install-location "/" \
+            --identifier "tech.rocketman.jamfmigrationtool" \
+            --version "${{ github.ref_name }}" \
+            --sign "${{ secrets.APPLE_INSTALLER_SIGNING_IDENTITY }}" \
+            "JamfMigrationTool-${{ github.ref_name }}.pkg"
+
+      - name: Verify Signature
+        run: |
+          pkgutil --check-signature "JamfMigrationTool-${{ github.ref_name }}.pkg"
+
+      - name: Notarize .pkg installer
+        run: |
+          xcrun notarytool store-credentials "notarytool-profile" \
+            --apple-id "${{ secrets.APPLE_ID }}" \
+            --password "${{ secrets.APPLE_APP_PASSWORD }}" \
+            --team-id "${{ secrets.TEAM_ID }}"
+
+          output=$(xcrun notarytool submit "JamfMigrationTool-${{ github.ref_name }}.pkg" --keychain-profile "notarytool-profile" --wait)
+          echo $output
+
+          extracted_id=$(echo "$output" | awk '/status: Invalid/ {getline; if ($1 == "id:") print $2}')
+
+          if [ -n "$extracted_id" ]; then
+            echo "ID: $extracted_id"
+            xcrun notarytool log $extracted_id --keychain-profile "notarytool-profile"
+            exit 1
+          else
+            # Staple the notarization
+            xcrun stapler staple "JamfMigrationTool-${{ github.ref_name }}.pkg"
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: JamfMigrationTool
+          path: |
+            build/Build/Products/Release/JamfMigrationTool
+            JamfMigrationTool-${{ github.ref_name }}.pkg
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: JamfMigrationTool
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            JamfMigrationTool
+            JamfMigrationTool-${{ github.ref_name }}.pkg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
