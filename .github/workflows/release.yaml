@@ -40,13 +40,24 @@ jobs:
         run: |
           xcodebuild -scheme JamfMigrationTool -configuration Release clean build CODE_SIGN_IDENTITY='Developer ID Application' CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO OTHER_CODE_SIGN_FLAGS='--timestamp' -derivedDataPath build
 
-      - name: Create .pkg installer
+      - name: Create .pkg installer with logo, dialog and postinstall
         run: |
           rm -rf package-root
           mkdir -p package-root/usr/local/bin
+          mkdir -p "package-root/Library/Application Support/Rocketman"
+
           cp build/Build/Products/Release/JamfMigrationTool package-root/usr/local/bin/
+          cp "resources/funcfi-logo-small.png" "package-root/Library/Application Support/Rocketman/funcfi-logo-small.png"
+
+          mkdir -p scripts
+          echo '#!/bin/bash
+          /usr/local/bin/JamfMigrationTool
+          exit 0' > scripts/postinstall
+          chmod +x scripts/postinstall
+
           pkgbuild \
             --root "package-root" \
+            --scripts scripts \
             --install-location "/" \
             --identifier "tech.rocketman.jamfmigrationtool" \
             --version "${{ github.ref_name }}" \
