@@ -40,7 +40,7 @@ jobs:
         run: |
           xcodebuild -scheme JamfMigrationTool -configuration Release clean build CODE_SIGN_IDENTITY='Developer ID Application' CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO OTHER_CODE_SIGN_FLAGS='--timestamp' -derivedDataPath build
 
-      - name: Create .pkg installer with logo, dialog and postinstall
+      - name: Create package directory structure
         run: |
           rm -rf package-root
           mkdir -p package-root/usr/local/bin
@@ -55,6 +55,18 @@ jobs:
           exit 0' > scripts/postinstall
           chmod +x scripts/postinstall
 
+      - name: Create unsigned package
+        run: |
+          pkgbuild \
+            --root "package-root" \
+            --scripts scripts \
+            --install-location "/" \
+            --identifier "tech.rocketman.jamfmigrationtool" \
+            --version "${{ github.ref_name }}" \
+            "JamfMigrationTool-${{ github.ref_name }}-unsigned.pkg"
+
+      - name: Create signed package
+        run: |
           pkgbuild \
             --root "package-root" \
             --scripts scripts \
@@ -68,7 +80,9 @@ jobs:
         run: |
           pkgutil --check-signature "JamfMigrationTool-${{ github.ref_name }}.pkg"
 
-      - name: Notarize .pkg installer
+      - name: Notarize package
+        id: notarize
+        continue-on-error: true
         run: |
           xcrun notarytool store-credentials "notarytool-profile" \
             --apple-id "${{ secrets.APPLE_ID }}" \
@@ -76,17 +90,23 @@ jobs:
             --team-id "${{ secrets.TEAM_ID }}"
 
           output=$(xcrun notarytool submit "JamfMigrationTool-${{ github.ref_name }}.pkg" --keychain-profile "notarytool-profile" --wait)
-          echo $output
+          echo "$output"
 
-          extracted_id=$(echo "$output" | awk '/status: Invalid/ {getline; if ($1 == "id:") print $2}')
-
-          if [ -n "$extracted_id" ]; then
-            echo "ID: $extracted_id"
-            xcrun notarytool log $extracted_id --keychain-profile "notarytool-profile"
-            exit 1
-          else
-            # Staple the notarization
+          if echo "$output" | grep -q "status: Accepted"; then
+            echo "Notarization successful!"
             xcrun stapler staple "JamfMigrationTool-${{ github.ref_name }}.pkg"
+            echo "NOTARIZATION_SUCCESS=true" >> $GITHUB_OUTPUT
+          else
+            echo "Notarization failed or had issues."
+
+            # Extract ID and log details if available
+            extracted_id=$(echo "$output" | grep -o 'id: [^ ]*' | cut -d' ' -f2)
+            if [ -n "$extracted_id" ]; then
+              echo "ID: $extracted_id"
+              xcrun notarytool log $extracted_id --keychain-profile "notarytool-profile"
+            fi
+
+            echo "NOTARIZATION_SUCCESS=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Upload artifacts
@@ -95,7 +115,8 @@ jobs:
           name: JamfMigrationTool
           path: |
             build/Build/Products/Release/JamfMigrationTool
-            JamfMigrationTool-${{ github.ref_name }}.pkg
+            JamfMigrationTool-${{ github.ref_name }}-unsigned.pkg
+            ${{ steps.notarize.outputs.NOTARIZATION_SUCCESS == 'true' && 'JamfMigrationTool-' || '' }}${{ steps.notarize.outputs.NOTARIZATION_SUCCESS == 'true' && github.ref_name || '' }}${{ steps.notarize.outputs.NOTARIZATION_SUCCESS == 'true' && '.pkg' || '' }}
 
   release:
     name: Create GitHub Release
@@ -111,11 +132,32 @@ jobs:
         with:
           name: JamfMigrationTool
 
-      - name: Create GitHub Release
+      - name: Check for notarized package
+        id: check_notarized
+        run: |
+          if [ -f "JamfMigrationTool-${{ github.ref_name }}.pkg" ]; then
+            echo "NOTARIZED_EXISTS=true" >> $GITHUB_OUTPUT
+          else
+            echo "NOTARIZED_EXISTS=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub Release with both packages
+        if: steps.check_notarized.outputs.NOTARIZED_EXISTS == 'true'
         uses: softprops/action-gh-release@v1
         with:
           files: |
             JamfMigrationTool
+            JamfMigrationTool-${{ github.ref_name }}-unsigned.pkg
             JamfMigrationTool-${{ github.ref_name }}.pkg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release with unsigned package only
+        if: steps.check_notarized.outputs.NOTARIZED_EXISTS == 'false'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            JamfMigrationTool
+            JamfMigrationTool-${{ github.ref_name }}-unsigned.pkg
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
