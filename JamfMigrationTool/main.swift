@@ -90,8 +90,10 @@ func showDialog(title: String, message: String, buttonText: String, iconPath: St
 func startJamfEnrollment() {
     let process = Process()
 
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/profiles")
-    process.arguments = ["renew", "-type", "enrollment"]
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+    process.arguments = [
+        "https://funcfi.jamfcloud.com/enroll/?invitation=34575975136649195478078314224683433652"
+    ]
 
     do {
         try process.run()
